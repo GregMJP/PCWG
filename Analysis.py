@@ -54,9 +54,7 @@ class PowerCalculator:
         self.windSpeedColumn = windSpeedColumn
 
     def power(self, row):
-
         return self.powerCurve.power(row[self.windSpeedColumn])
-
 
 class TurbulencePowerCalculator:
 
@@ -157,12 +155,14 @@ class Analysis:
         self.ratedPower = config.ratedPower
 
         self.baseLineMode = config.baseLineMode
+        self.interpolationMode = config.interpolationMode
         self.filterMode = config.filterMode
         self.powerCurveMode = config.powerCurveMode
 
         self.defineInnerRange(config)
 
         self.status.addMessage("Baseline Mode: %s" % self.baseLineMode)
+        self.status.addMessage("Interpolation Mode: %s" % self.interpolationMode)
         self.status.addMessage("Filter Mode: %s" % self.filterMode)
         self.status.addMessage("Power Curve Mode: %s" % self.powerCurveMode)
 
@@ -184,7 +184,7 @@ class Analysis:
             
             self.specifiedPowerCurve = turbine.PowerCurve(powerCurveConfig.powerCurveLevels, powerCurveConfig.powerCurveDensity, \
                                                           self.rotorGeometry, "Specified Power", "Specified Turbulence", \
-                                                          turbulenceRenormalisation = self.turbRenormActive, name = 'Specified')
+                                                          turbulenceRenormalisation = self.turbRenormActive, name = 'Specified', interpolationMode = self.interpolationMode)
 
             self.referenceDensity = self.specifiedPowerCurve.referenceDensity
             
@@ -195,6 +195,9 @@ class Analysis:
         
         if self.densityCorrectionActive:
             if self.hasDensity:
+                self.status.addMessage("Performing Density Correction")
+                self.status.addMessage("Mean measured density is %.4f kg/m^3" % self.dataFrame[self.hubDensity].mean())
+                self.status.addMessage("Correcting to reference density of %.4f kg/m^3" % self.referenceDensity)
                 self.dataFrame[self.densityCorrectedHubWindSpeed] = self.dataFrame.apply(DensityCorrectionCalculator(self.referenceDensity, self.hubWindSpeed, self.hubDensity).densityCorrectedHubWindSpeed, axis=1)
                 self.dataFrame[self.inputHubWindSpeed] = self.dataFrame[self.densityCorrectedHubWindSpeed]
                 self.inputHubWindSpeedSource = self.densityCorrectedHubWindSpeed
@@ -207,7 +210,7 @@ class Analysis:
         self.dataFrame[self.windSpeedBin] = self.dataFrame[self.inputHubWindSpeed].map(self.windSpeedBins.binCenter)
         self.dataFrame[self.turbulenceBin] = self.dataFrame[self.hubTurbulence].map(self.turbulenceBins.binCenter)
 
-        self.applyRemainingFilters()
+        self.applyRemainingFilters() #To do: record rows which are removed by each filter independently, as opposed to sequentially.
 
         if self.hasDensity:
             if self.densityCorrectionActive:
@@ -227,8 +230,8 @@ class Analysis:
             self.outerTurbulenceMeasuredPowerCurve = self.calculateMeasuredPowerCurve(2, config.cutInWindSpeed, config.cutOutWindSpeed, config.ratedPower, self.actualPower, 'Outer Turbulence')
 
             if self.hasShear:
-                self.innerMeasuredPowerCurve = self.calculateMeasuredPowerCurve(1, config.cutInWindSpeed, config.cutOutWindSpeed, config.ratedPower, self.actualPower, 'Inner Range')
-                self.outerMeasuredPowerCurve = self.calculateMeasuredPowerCurve(4, config.cutInWindSpeed, config.cutOutWindSpeed, config.ratedPower, self.actualPower, 'Outer Range')
+                self.innerMeasuredPowerCurve = self.calculateMeasuredPowerCurve(1, config.cutInWindSpeed, config.cutOutWindSpeed, config.ratedPower, self.actualPower, 'Inner Range', required = (self.powerCurveMode == 'InnerMeasured'))
+                self.outerMeasuredPowerCurve = self.calculateMeasuredPowerCurve(4, config.cutInWindSpeed, config.cutOutWindSpeed, config.ratedPower, self.actualPower, 'Outer Range', required = (self.powerCurveMode == 'OuterMeasured'))
 
             self.status.addMessage("Actual Power Curves Complete.")
 
@@ -243,6 +246,10 @@ class Analysis:
             self.normalisingRatedWindSpeed = self.powerCurve.zeroTurbulencePowerCurve.initialZeroTurbulencePowerCurve.ratedWindSpeed
             self.normalisingCutInWindSpeed = self.powerCurve.zeroTurbulencePowerCurve.initialZeroTurbulencePowerCurve.selectedStats.cutInWindSpeed
 
+            print "normalisation"
+            print self.normalisingRatedWindSpeed
+            print self.normalisingCutInWindSpeed
+            
             self.normalisedWS = 'Normalised WS'
             self.dataFrame[self.normalisedWS] = (self.dataFrame[self.inputHubWindSpeed] - self.normalisingCutInWindSpeed) / (self.normalisingRatedWindSpeed - self.normalisingCutInWindSpeed)
 
@@ -333,7 +340,7 @@ class Analysis:
             if self.turbRenormActive:
                 self.powerCurveScatterMetricByWindSpeedAfterTiRenorm = self.calculateScatterMetricByWindSpeed(self.allMeasuredTurbCorrectedPowerCurve, self.measuredTurbulencePower)
             self.iec_2005_cat_A_power_curve_uncertainty()
-            
+        self.status.addMessage("Total of %.3f hours of data used in analysis." % self.hours)
         self.status.addMessage("Complete")
 
     def auto_activate_corrections(self):
@@ -667,15 +674,19 @@ class Analysis:
             rand_sensitivity_results.append(variation_metric)
         self.sensitivityAnalysisThreshold = np.mean(rand_sensitivity_results)
         print "\nSignificance threshold for power curve variation metric is %.2f%%."  % (self.sensitivityAnalysisThreshold * 100.)
+        self.status.addMessage("\nSignificance threshold for power curve variation metric is %.2f%%."  % (self.sensitivityAnalysisThreshold * 100.))
         filteredDataFrame.drop(rand_columns, axis = 1, inplace = True)
         
         #sensitivity to time of day, time of year, time elapsed in test
         filteredDataFrame['Days Elapsed In Test'] = (filteredDataFrame[self.timeStamp] - filteredDataFrame[self.timeStamp].min()).dt.days
         filteredDataFrame['Hours From Noon'] = np.abs(filteredDataFrame[self.timeStamp].dt.hour - 12)
+        filteredDataFrame['Hours From Midnight'] = np.minimum(filteredDataFrame[self.timeStamp].dt.hour, np.abs(24 - filteredDataFrame[self.timeStamp].dt.hour))
         filteredDataFrame['Days From 182nd Day Of Year'] = np.abs(filteredDataFrame[self.timeStamp].dt.dayofyear - 182)
+        filteredDataFrame['Days From December Solstice'] = filteredDataFrame[self.timeStamp].apply(lambda x: x.replace(day = 22, month = 12)) - filteredDataFrame[self.timeStamp]
+        filteredDataFrame['Days From December Solstice'] = np.minimum(np.abs(filteredDataFrame['Days From December Solstice'].dt.days), 365 - np.abs(filteredDataFrame['Days From December Solstice'].dt.days))
         
         #for col in (self.sensitivityDataColumns + ['Days Elapsed In Test','Hours From Noon','Days From 182nd Day Of Year']):
-        for col in (list(filteredDataFrame.columns) + ['Days Elapsed In Test','Hours From Noon','Days From 182nd Day Of Year']): # if we want to do the sensitivity analysis for all columns in the dataframe...
+        for col in (list(filteredDataFrame.columns)): # if we want to do the sensitivity analysis for all columns in the dataframe...
             print "\nAttempting to compute sensitivity of power curve to %s..." % col
             try:
                 self.powerCurveSensitivityResults[col], self.powerCurveSensitivityVariationMetrics.loc[col, 'Power Curve Variation Metric'] = self.calculatePowerCurveSensitivity(filteredDataFrame, power_curve, col, power_column, interp_pow_column)
@@ -684,8 +695,9 @@ class Analysis:
                     self.powerCurveSensitivityVariationMetrics.drop(col, axis = 1, inplace = True)
             except:
                 print "Could not run sensitivity analysis for %s." % col
+        self.powerCurveSensitivityVariationMetrics.loc['Significance Threshold', 'Power Curve Variation Metric'] = self.sensitivityAnalysisThreshold
         self.powerCurveSensitivityVariationMetrics.sort('Power Curve Variation Metric', ascending = False, inplace = True)
-            
+    
     def calculatePowerCurveSensitivity(self, dataFrame, power_curve, dataColumn, power_column, interp_pow_column):
         
         dataFrame['Energy MWh'] = (dataFrame[power_column] * (float(self.timeStepInSeconds) / 3600.)).astype('float')
@@ -719,7 +731,7 @@ class Analysis:
         
         return sensitivityResults.rename(columns = {'Wind Speed Bin':'Data Count'}), np.abs(sensitivityResults['Energy Delta MWh']).sum() / (power_curve.powerCurveLevels[power_column] * power_curve.powerCurveLevels['Data Count'] * (float(self.timeStepInSeconds) / 3600.)).sum()
 
-    def calculateMeasuredPowerCurve(self, mode, cutInWindSpeed, cutOutWindSpeed, ratedPower, powerColumn, name):
+    def calculateMeasuredPowerCurve(self, mode, cutInWindSpeed, cutOutWindSpeed, ratedPower, powerColumn, name, required = False):
         
         print "Calculating %s power curve." % name        
         
@@ -756,14 +768,15 @@ class Analysis:
             
             powerCurvePadder = PadderFactory().generate(self.powerCurvePaddingMode, powerColumn, self.inputHubWindSpeed, self.hubTurbulence, self.dataCount)
 
-            powerLevels = powerCurvePadder.pad(dfPowerLevels,cutInWindSpeed,cutOutWindSpeed,ratedPower)
+            powerLevels = powerCurvePadder.pad(dfPowerLevels,cutInWindSpeed,cutOutWindSpeed,ratedPower, self.windSpeedBins)
 
             if dfPowerCoeff is not None:
                 powerLevels[self.powerCoeff] = dfPowerCoeff
 
             return turbine.PowerCurve(powerLevels, self.referenceDensity, self.rotorGeometry, powerColumn,
                                       self.hubTurbulence, wsCol = self.inputHubWindSpeed, countCol = self.dataCount,
-                                            turbulenceRenormalisation = (self.turbRenormActive if powerColumn != self.turbulencePower else False), name = name)
+                                            turbulenceRenormalisation = (self.turbRenormActive if powerColumn != self.turbulencePower else False), 
+                                            name = name, interpolationMode = self.interpolationMode, required = required)
 
     def calculatePowerDeviationMatrix(self, power, filterMode, windBin = None, turbBin = None):
         if windBin is None:
@@ -822,19 +835,27 @@ class Analysis:
     def calculate_pcwg_error_fields(self):
         self.calculate_anonymous_values()
         self.pcwgErrorBaseline = 'Baseline Error'
+        self.pcwgErrorCols = [self.pcwgErrorBaseline]
         self.dataFrame[self.pcwgErrorBaseline] = self.dataFrame[self.hubPower] - self.dataFrame[self.actualPower]
         if self.turbRenormActive:
             self.pcwgErrorTurbRenor = 'TI Renormalisation Error'
             self.dataFrame[self.pcwgErrorTurbRenor] = self.dataFrame[self.turbulencePower] - self.dataFrame[self.actualPower]
+            self.pcwgErrorCols.append(self.pcwgErrorTurbRenor)
         if self.rewsActive:
             self.pcwgErrorRews = 'REWS Error'
             self.dataFrame[self.pcwgErrorRews] = self.dataFrame[self.rewsPower] - self.dataFrame[self.actualPower]
+            self.pcwgErrorCols.append(self.pcwgErrorRews)
         if (self.turbRenormActive and self.rewsActive):
             self.pcwgErrorTiRewsCombined = 'Combined TI Renorm and REWS Error'
             self.dataFrame[self.pcwgErrorTiRewsCombined] = self.dataFrame[self.combinedPower] - self.dataFrame[self.actualPower]
+            self.pcwgErrorCols.append(self.pcwgErrorTiRewsCombined)
         if self.powerDeviationMatrixActive:
             self.pcwgErrorPdm = 'PDM Error'
-            self.dataFrame[self.pcwgErrorPdm] = self.dataFrame[self.powerDeviationMatrixPower] - self.dataFrame[self.actualPower]        
+            self.dataFrame[self.pcwgErrorPdm] = self.dataFrame[self.powerDeviationMatrixPower] - self.dataFrame[self.actualPower]
+            self.pcwgErrorCols.append(self.pcwgErrorPdm)
+        self.powerCurveCompleteBins = self.powerCurve.powerCurveLevels.index[self.powerCurve.powerCurveLevels[self.dataCount] > 0]
+        self.pcwgErrorValid = 'Baseline Power Curve WS Bin Complete'
+        self.dataFrame[self.pcwgErrorValid] = self.dataFrame[self.windSpeedBin].isin(self.powerCurveCompleteBins)
     
     def calculate_pcwg_overall_metrics(self):
         self.overall_pcwg_err_metrics = {}
@@ -875,20 +896,41 @@ class Analysis:
                 self.binned_pcwg_err_metrics[bin_col_name][self.pcwgErrorTiRewsCombined] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorTiRewsCombined, bin_col_name)
             if self.powerDeviationMatrixActive:
                 self.binned_pcwg_err_metrics[bin_col_name][self.pcwgErrorPdm] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorPdm, bin_col_name)
+        #Using Inner and Outer range data only to calculate error metrics binned by normalised WS
+        bin_col_name = self.normalisedWSBin
+        for pcwg_range in ['Inner', 'Outer']:
+            dict_key = bin_col_name + ' ' + pcwg_range + ' Range'
+            self.binned_pcwg_err_metrics[dict_key] = {}
+            self.binned_pcwg_err_metrics[dict_key][self.pcwgErrorBaseline] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorBaseline, bin_col_name, pcwg_range = pcwg_range)
+            if self.turbRenormActive:
+                self.binned_pcwg_err_metrics[dict_key][self.pcwgErrorTurbRenor] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorTurbRenor, bin_col_name, pcwg_range = pcwg_range)
+            if self.rewsActive:
+                self.binned_pcwg_err_metrics[dict_key][self.pcwgErrorRews] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorRews, bin_col_name, pcwg_range = pcwg_range)
+            if (self.turbRenormActive and self.rewsActive):
+                self.binned_pcwg_err_metrics[dict_key][self.pcwgErrorTiRewsCombined] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorTiRewsCombined, bin_col_name, pcwg_range = pcwg_range)
+            if self.powerDeviationMatrixActive:
+                self.binned_pcwg_err_metrics[dict_key][self.pcwgErrorPdm] = self._calculate_pcwg_error_metric_by_bin(self.pcwgErrorPdm, bin_col_name, pcwg_range = pcwg_range)
             
-    def _calculate_pcwg_error_metric_by_bin(self, candidate_error, bin_col_name):
+    def _calculate_pcwg_error_metric_by_bin(self, candidate_error, bin_col_name, pcwg_range = 'All'):
         def sum_abs(x):
             return x.abs().sum()
-        grouped = self.dataFrame.groupby(bin_col_name)
+        if pcwg_range == 'All':
+            grouped = self.dataFrame.loc[self.dataFrame[self.pcwgErrorValid], :].groupby(bin_col_name)
+        elif pcwg_range == 'Inner':
+            grouped = self.dataFrame.loc[np.logical_and(self.dataFrame[self.pcwgErrorValid], (self.dataFrame[self.pcwgRange] == 'Inner')), :].groupby(bin_col_name)
+        elif pcwg_range == 'Outer':
+            grouped = self.dataFrame.loc[np.logical_and(self.dataFrame[self.pcwgErrorValid], (self.dataFrame[self.pcwgRange] == 'Outer')), :].groupby(bin_col_name)
+        else:
+            raise Exception('Unrecognised pcwg_range argument %s passed to Analysis._calculate_pcwg_error_metric_by_bin() method. Must be Inner, Outer or All.' % pcwg_range)
         agg = grouped.agg({candidate_error: ['sum', sum_abs, 'count'], self.actualPower: 'sum'})
         agg.loc[:, (candidate_error, 'NME')] = agg.loc[:, (candidate_error, 'sum')] / agg.loc[:, (self.actualPower, 'sum')]
         agg.loc[:, (candidate_error, 'NMAE')] = agg.loc[:, (candidate_error, 'sum_abs')] / agg.loc[:, (self.actualPower, 'sum')]
         return agg.loc[:, candidate_error].drop(['sum', 'sum_abs'], axis = 1).rename(columns = {'count': self.dataCount})
     
     def _calculate_pcwg_error_metric(self, candidate_error):
-        data_count = len(self.dataFrame[candidate_error].dropna())
-        NME = (self.dataFrame[candidate_error].sum() / self.dataFrame[self.actualPower].sum())
-        NMAE = (np.abs(self.dataFrame[candidate_error]).sum() / self.dataFrame[self.actualPower].sum())
+        data_count = len(self.dataFrame.loc[self.dataFrame[self.pcwgErrorValid], candidate_error].dropna())
+        NME = (self.dataFrame.loc[self.dataFrame[self.pcwgErrorValid], candidate_error].sum() / self.dataFrame.loc[self.dataFrame[self.pcwgErrorValid], self.actualPower].sum())
+        NMAE = (np.abs(self.dataFrame.loc[self.dataFrame[self.pcwgErrorValid], candidate_error]).sum() / self.dataFrame.loc[self.dataFrame[self.pcwgErrorValid], self.actualPower].sum())
         return NME, NMAE, data_count
 
     def iec_2005_cat_A_power_curve_uncertainty(self):
@@ -927,13 +969,15 @@ class Analysis:
 
         report.report(path, self, powerDeviationMatrix = deviationMatrix, scatterMetric= scatter)
 
-    def pcwg_data_share_report(self, version = 'Unknown', output_fname = (os.getcwd() + os.sep + 'Data Sharing Initiative 1 Report.xls')):
+    def pcwg_share_metrics_calc(self):
         if self.powerCurveMode != "InnerMeasured":
             raise Exception("Power Curve Mode must be set to Inner to export PCWG Sharing Initiative 1 Report.")
         else:
             self.calculate_pcwg_error_fields()
             self.calculate_pcwg_overall_metrics()
-            self.calculate_pcwg_binned_metrics()        
+            self.calculate_pcwg_binned_metrics()
+
+    def pcwg_data_share_report(self, version = 'Unknown', output_fname = (os.getcwd() + os.sep + 'Data Sharing Initiative 1 Report.xls')):
         from data_sharing_reports import pcwg_share1_rpt
         rpt = pcwg_share1_rpt(self, version = version, output_fname = output_fname)
         rpt.report()
@@ -994,6 +1038,11 @@ class Analysis:
     def calculateBase(self):
 
         if self.baseLineMode == "Hub":
+            if self.powerCurve is None:
+                exc_str = "%s Power Curve has not been calculated successfully." % self.powerCurveMode
+                if self.powerCurveMode == 'InnerMeasured':
+                    exc_str += " Check Inner Range settings."
+                raise Exception(exc_str)
             self.dataFrame[self.basePower] = self.dataFrame.apply(PowerCalculator(self.powerCurve, self.inputHubWindSpeed).power, axis=1)
         elif self.baseLineMode == "Measured":
             if self.hasActualPower:
@@ -1117,114 +1166,95 @@ class Analysis:
 class PadderFactory:
     @staticmethod
     def generate(strPadder, powerCol, wsCol, turbCol, countCol):
+
         strPadder = strPadder.lower()
-        if strPadder == 'linear':
-            return LinearPadder(powerCol, wsCol, turbCol, countCol)
-        elif strPadder == 'specified':
-            return SpecifiedPadder(powerCol, wsCol, turbCol, countCol)
+        
+        if strPadder  == 'none':
+            return NonePadder(powerCol, wsCol, turbCol, countCol)
         elif strPadder  == 'observed':
             return LastObservedPadder(powerCol, wsCol, turbCol, countCol)
         elif strPadder  == 'max':
             return MaxPadder(powerCol, wsCol, turbCol, countCol)
         else:
-            print "Power curve padding option not detected/recognised - linear padding will occur at unobserved wind speeds"
-            return LinearPadder(powerCol, wsCol, turbCol, countCol)
+            raise Exception("Power curve padding option not detected/recognised: %s" % strPadder)
 
 class Padder:
-    stepIn = 0.0001
+
     def __init__(self, powerCol, wsCol, turbCol, countCol):
+
         self.powerCol = powerCol
         self.wsCol = wsCol
         self.turbCol = turbCol
         self.countCol = countCol
+        
+    def getWindSpeedBins(self, bins):
 
-    def outsideCutIns(self,powerLevels,cutInWindSpeed,cutOutWindSpeed):
-        #power values
-        powerLevels.loc[50.0, self.powerCol] = 0.0
-        powerLevels.loc[0.1, self.powerCol] = 0.0
-        powerLevels.loc[cutInWindSpeed - self.stepIn, self.powerCol] = 0.0
-        powerLevels.loc[cutOutWindSpeed + self.stepIn, self.powerCol] = 0.0
-        #ws values
-        powerLevels.loc[50.0, self.wsCol] = 50.
-        powerLevels.loc[0.1, self.wsCol] = .1
-        powerLevels.loc[cutInWindSpeed - self.stepIn, self.wsCol] = cutInWindSpeed - self.stepIn
-        powerLevels.loc[cutOutWindSpeed + self.stepIn, self.wsCol] = cutOutWindSpeed + self.stepIn
-        #turb values
-        powerLevels.loc[50.0, self.turbCol] = .1
-        powerLevels.loc[0.1, self.turbCol] = .1
-        powerLevels.loc[cutInWindSpeed - self.stepIn, self.turbCol] = .1
-        powerLevels.loc[cutOutWindSpeed + self.stepIn, self.turbCol] = .1
-        #data count values
-        powerLevels.loc[50.0, self.countCol] = 0
-        powerLevels.loc[0.1, self.countCol] = 0
-        powerLevels.loc[cutInWindSpeed - self.stepIn, self.countCol] = 0
-        powerLevels.loc[cutOutWindSpeed + self.stepIn, self.countCol] = 0
+        binArray = []
+
+        for i in range(bins.numberOfBins):
+            binArray.append(bins.binCenterByIndex(i))
+
+        return binArray
+
+    def levelExists(self, powerLevels, windSpeed):
+        
+        try:
+            dummy = powerLevels.loc[windSpeed, self.powerCol]
+            return True
+        except:
+            return False
+            
+    def turbulencePadValue(self, powerLevels, windSpeed):
+
+        #revisit this logic
+        
+        if windSpeed > self.max_key:
+            return powerLevels.loc[self.max_key, self.turbCol]
+        elif windSpeed < self.min_key:
+            return powerLevels.loc[self.min_key, self.turbCol]
+        else:
+            return powerLevels.loc[self.max_key, self.turbCol]
+        
+    def pad(self, powerLevels, cutInWindSpeed, cutOutWindSpeed, ratedPower, bins):
+
+        self.min_key = min(powerLevels.index)
+        self.max_key = max(powerLevels.index)
+        
+        for windSpeed in self.getWindSpeedBins(bins):
+            
+            if not self.levelExists(powerLevels, windSpeed):
+
+                powerPadValue = self.powerPadValue(powerLevels, windSpeed)
+                turbulencePadValue = self.turbulencePadValue(powerLevels, windSpeed)
+
+                if windSpeed > cutOutWindSpeed:
+                    powerLevels.loc[windSpeed, self.powerCol] = 0.0
+                else:
+
+                    if windSpeed < self.min_key:
+                        powerLevels.loc[windSpeed, self.powerCol] = 0.0
+                    else:
+                        powerLevels.loc[windSpeed, self.powerCol] = powerPadValue
+                    
+                powerLevels.loc[windSpeed, self.turbCol] = turbulencePadValue
+                powerLevels.loc[windSpeed, self.wsCol] = windSpeed
+                powerLevels.loc[windSpeed, self.countCol] = 0
+            
+        powerLevels.sort_index(inplace=True)
+        
         return powerLevels
 
+class NonePadder(Padder):
+
+    def pad(self, powerLevels, cutInWindSpeed, cutOutWindSpeed, ratedPower, bins):
+        return powerLevels
+    
 class MaxPadder(Padder):
-    def pad(self,powerLevels,cutInWindSpeed,cutOutWindSpeed,ratedPower):
-        max_key_init = max(powerLevels.index)
-        new_x1 = max_key_init + self.stepIn
-        new_x2 = cutOutWindSpeed
-        #power vals
-        powerLevels.loc[new_x1, self.powerCol] = powerLevels[self.powerCol].max()
-        powerLevels.loc[new_x2, self.powerCol] = powerLevels[self.powerCol].max()
-        #turb
-        powerLevels.loc[new_x1, self.turbCol] = .1
-        powerLevels.loc[new_x2, self.turbCol] = .1
-        #ws
-        powerLevels.loc[new_x1, self.wsCol] = max_key_init + self.stepIn
-        powerLevels.loc[new_x2, self.wsCol] = new_x2
-        #count
-        powerLevels.loc[new_x1, self.countCol] = 0
-        powerLevels.loc[new_x2, self.countCol] = 0
-        #outside cut-ins
-        powerLevels = self.outsideCutIns(powerLevels,cutInWindSpeed,cutOutWindSpeed)
-        return powerLevels
 
+    def powerPadValue(self, powerLevels, windSpeed):
+        return powerLevels[self.powerCol].max()
+  
 class LastObservedPadder(Padder):
-    def pad(self,powerLevels,cutInWindSpeed,cutOutWindSpeed,ratedPower):
-        max_key_init = max(powerLevels.index)
-        new_x2 = cutOutWindSpeed
-        #power vals
-        powerLevels.loc[new_x2, self.powerCol] = powerLevels[self.powerCol][max_key_init]
-        #turb
-        powerLevels.loc[new_x2, self.turbCol] = .1
-        #ws
-        powerLevels.loc[new_x2, self.wsCol] = new_x2
-        #count
-        powerLevels.loc[new_x2, self.countCol] = 0
-        #outside cut-ins
-        powerLevels = self.outsideCutIns(powerLevels,cutInWindSpeed,cutOutWindSpeed)
-        return powerLevels
 
-class LinearPadder(Padder):
-    def pad(self,powerLevels,cutInWindSpeed,cutOutWindSpeed,ratedPower):
-        powerLevels.loc[cutOutWindSpeed, self.powerCol] = ratedPower
-        powerLevels.loc[cutOutWindSpeed, self.wsCol] = cutOutWindSpeed
-        powerLevels.loc[cutOutWindSpeed, self.turbCol] = .1
-        powerLevels.loc[cutOutWindSpeed, self.countCol] = 0
-        powerLevels = self.outsideCutIns(powerLevels,cutInWindSpeed,cutOutWindSpeed)
-        return powerLevels
-
-
-class SpecifiedPadder(Padder):
-    def pad(self,powerLevels,cutInWindSpeed,cutOutWindSpeed,ratedPower):
-        max_key_init = max(powerLevels.index)
-        new_x1 = max_key_init + self.stepIn
-        new_x2 = cutOutWindSpeed
-        #power vals
-        powerLevels.loc[new_x1, self.powerCol] = ratedPower
-        powerLevels.loc[new_x2, self.powerCol] = ratedPower
-        #turb
-        powerLevels.loc[new_x1, self.turbCol] = .1
-        powerLevels.loc[new_x2, self.turbCol] = .1
-        #ws
-        powerLevels.loc[new_x1, self.wsCol] = max_key_init + self.stepIn
-        powerLevels.loc[new_x2, self.wsCol] = new_x2
-        #count
-        powerLevels.loc[new_x1, self.countCol] = 0
-        powerLevels.loc[new_x2, self.countCol] = 0
-        #outside cut-ins
-        powerLevels = self.outsideCutIns(powerLevels,cutInWindSpeed,cutOutWindSpeed)
-        return powerLevels
+    def powerPadValue(self, powerLevels, windSpeed):
+        return powerLevels[self.max_key, self.powerCol]

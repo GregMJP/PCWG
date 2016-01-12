@@ -5,6 +5,7 @@ from datetime import datetime as dt
 from PIL import Image
 from shutil import rmtree
 from pcwg_tool import pcwg_inner_ranges
+import numpy as np
 
 template_name = 'Share_1_template.xls'
 
@@ -70,9 +71,12 @@ class pcwg_share1_rpt(object):
             sh.write(6, col, conf.invariant_rand_id)
             _apply_cell_style(dset_header_style, sh, 6, col)
             wsl = len(conf.windSpeedLevels) if self.analysis.rewsActive else None
-            wdr = len(conf.windDirectionLevels) if self.analysis.rewsActive else None
+            if self.analysis.rewsActive:
+                rews_has_veer = (conf.windDirectionLevels[conf.windDirectionLevels.keys()[0]] is not None and len(conf.windDirectionLevels[conf.windDirectionLevels.keys()[0]]) > 0)
+            else:
+                rews_has_veer = None
             sh.write(8, col, wsl)
-            sh.write(9, col, wdr)
+            sh.write(9, col, rews_has_veer)
             _apply_cell_style(calculated_style, sh, 8, col)
             _apply_cell_style(calculated_style, sh, 9, col)
             sh.write(10, col, range_id)
@@ -81,10 +85,15 @@ class pcwg_share1_rpt(object):
             _apply_cell_style(calculated_style, sh, 23, col)
             sh.write(24, col, self.analysis.config.hubHeight)
             _apply_cell_style(calculated_style, sh, 24, col)
-            sh.write(25, col, self.analysis.config.ratedPower)
+            specific_power = self.analysis.config.ratedPower / (np.pi * (self.analysis.config.diameter / 2.) ** 2.)
+            sh.write(25, col, specific_power)
             _apply_cell_style(calculated_style, sh, 25, col)
             sh.write(27, col, int(min(self.analysis.dataFrame.loc[self.analysis.dataFrame[self.analysis.nameColumn] == conf.name, self.analysis.timeStamp].dt.year)))
             _apply_cell_style(calculated_style, sh, 27, col)
+            
+            sh.write(30, col, self.analysis.config.interpolationMode)
+            _apply_cell_style(calculated_style, sh, 30, col)
+
             for row in man_req_rows:
                 sh.write(row, col, None)
                 _apply_cell_style(manual_required_style, sh, row, col)
@@ -180,6 +189,8 @@ class pcwg_share1_rpt(object):
     def _write_metrics_sheet(self, sh_name, error_col):
         self.__write_overall_metric_sheet(sh_name)
         self.__write_by_ws_metric_sheet(sh_name, error_col)
+        self.__write_by_ws_metric_inner_sheet(sh_name, error_col)
+        self.__write_by_ws_metric_outer_sheet(sh_name, error_col)
         if self.analysis.hasDirection:
             self.__write_by_dir_metric_sheet(sh_name, error_col)
         self.__write_by_time_metric_sheet(sh_name, error_col)
@@ -199,9 +210,38 @@ class pcwg_share1_rpt(object):
         col = 3
         for i in self.analysis.normalisedWindSpeedBins.centers:
             try:
-                wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 7, col)
-                wrt_cell_keep_style(df.loc[i, 'NME'], sh, 8, col)
-                wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 9, col)
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 7, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 8, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 9, col)
+                col += 1
+            except:
+                col += 1
+                
+    def __write_by_ws_metric_inner_sheet(self, sh_name, err_col):
+        df = self.analysis.binned_pcwg_err_metrics[self.analysis.normalisedWSBin + ' ' + 'Inner' + ' Range'][err_col]
+        sh = self.workbook.get_sheet(sheet_map[sh_name])
+        col = 3
+        for i in self.analysis.normalisedWindSpeedBins.centers:
+            try:
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 11, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 12, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 13, col)
+                col += 1
+            except:
+                col += 1
+                
+    def __write_by_ws_metric_outer_sheet(self, sh_name, err_col):
+        df = self.analysis.binned_pcwg_err_metrics[self.analysis.normalisedWSBin + ' ' + 'Outer' + ' Range'][err_col]
+        sh = self.workbook.get_sheet(sheet_map[sh_name])
+        col = 3
+        for i in self.analysis.normalisedWindSpeedBins.centers:
+            try:
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 15, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 16, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 17, col)
                 col += 1
             except:
                 col += 1
@@ -212,9 +252,10 @@ class pcwg_share1_rpt(object):
         col = 3
         for i in self.analysis.pcwgWindDirBins.centers:
             try:
-                wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 19, col)
-                wrt_cell_keep_style(df.loc[i, 'NME'], sh, 20, col)
-                wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 21, col)
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 27, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 28, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 29, col)
                 col += 1
             except:
                 col += 1
@@ -225,9 +266,10 @@ class pcwg_share1_rpt(object):
         col = 3
         for i in range(0,24):
             try:
-                wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 11, col)
-                wrt_cell_keep_style(df.loc[i, 'NME'], sh, 12, col)
-                wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 13, col)
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 19, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 20, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 21, col)
                 col += 1
             except:
                 col += 1
@@ -238,9 +280,10 @@ class pcwg_share1_rpt(object):
         col = 3
         for i in ['Inner','Outer']:
             try:
-                wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 23, col)
-                wrt_cell_keep_style(df.loc[i, 'NME'], sh, 24, col)
-                wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 25, col)
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 31, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 32, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 33, col)
                 col += 1
             except:
                 col += 1
@@ -251,9 +294,10 @@ class pcwg_share1_rpt(object):
         col = 3
         for i in ['LWS-LTI','LWS-HTI','HWS-LTI','HWS-HTI']:
             try:
-                wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 27, col)
-                wrt_cell_keep_style(df.loc[i, 'NME'], sh, 28, col)
-                wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 29, col)
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 35, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 36, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 37, col)
                 col += 1
             except:
                 col += 1
@@ -264,9 +308,10 @@ class pcwg_share1_rpt(object):
         col = 3
         for i in range(1,13):
             try:
-                wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 15, col)
-                wrt_cell_keep_style(df.loc[i, 'NME'], sh, 16, col)
-                wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 17, col)
+                if df.loc[i, 'Data Count'] > 0:
+                    wrt_cell_keep_style(int(df.loc[i, 'Data Count']), sh, 23, col)
+                    wrt_cell_keep_style(df.loc[i, 'NME'], sh, 24, col)
+                    wrt_cell_keep_style(df.loc[i, 'NMAE'], sh, 25, col)
                 col += 1
             except:
                 col += 1
